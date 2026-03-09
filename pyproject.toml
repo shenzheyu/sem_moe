@@ -1,0 +1,13 @@
+[project]
+name = "semantic-parallelism"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "vllm",
+    "torch==2.10.0",
+]
+
+[tool.uv.sources]
+vllm = { path = "../vllm", editable = true }
