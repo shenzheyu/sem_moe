@@ -5,8 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "datasets>=3.0.0",
     "vllm",
     "torch==2.10.0",
+    "pytest>=9.0.2",
 ]
 
 [tool.uv.sources]
