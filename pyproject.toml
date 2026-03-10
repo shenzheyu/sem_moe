@@ -11,6 +11,8 @@ dependencies = [
     "pytest>=9.0.2",
     "vllm",
     "tqdm>=4.67.3",
+    "tblib>=3.2.2",
+    "flashinfer-python>=0.6.4",
 ]
 
 [tool.uv.sources]

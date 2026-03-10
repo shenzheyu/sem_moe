@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from profile_collect import run_collect_activations
+from profile_online_dp import run_evaluate_dp_scheduling
 from profile_schedule import run_build_model_schedule
 from profile_stats import (
     run_build_token_expert_stats,
@@ -239,6 +240,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable terminal progress bars for long-running offline scheduling work.",
     )
     schedule_parser.set_defaults(func=run_build_model_schedule)
+
+    evaluate_dp_parser = profile_subparsers.add_parser(
+        "evaluate-dp-scheduling",
+        help="Evaluate Attention-DP request scheduling metrics from raw traces and schedule tables.",
+    )
+    evaluate_dp_parser.add_argument("--run-dir", type=_existing_run_dir, required=True)
+    evaluate_dp_parser.set_defaults(func=run_evaluate_dp_scheduling)
 
     inspect_parser = profile_subparsers.add_parser(
         "inspect",

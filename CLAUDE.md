@@ -384,6 +384,18 @@ Tp_table = max(T_score, axis=1)
 
 这一步是论文复现的必要条件，不是可选优化。
 
+实现补充约束（这部分也必须写清）：
+- 当 `EP > 1` 时，**不能**只在权重加载完成后对本 rank 已有的 expert tensor 做一次本地 `permute`
+- 原因是：vLLM 在 EP 模式下每个 rank 只加载自己负责的那部分 experts；如果不在**权重加载阶段**就改变 `global expert id -> local slot / rank` 的 ownership，某个 expert 根本不会真正搬到 `E[layer]` 指定的新 device
+- 因此在线 model scheduling 在 EP 场景下应拆成两步：
+  1. **加载期 loader-map**：让 checkpoint 中旧 expert id 按 `E[layer]` 对应的新 rank / local slot 被加载
+  2. **运行期 runtime-map**：权重加载完成并完成 gate 重排后，切回“新 expert 编号”的运行时映射
+- 如果只做“加载后本地重排”，而没有改变加载期 ownership，这不算完成第三步里的在线 model scheduling
+
+vLLM 中 gate 重排的具体语义补充：
+- 论文文字里说“gating 矩阵列重排”，但在 vLLM `ReplicatedLinear` / `GateLinear` 的实现里，等价操作是按 expert permutation 重排 **output channel / weight row**
+- expert reorder 和 gate reorder 必须成对出现；只做其中一个会破坏 gate 输出与 expert slot 的对应关系
+
 验证要求：
 - expert reorder 前后，在“关闭在线调度”的情况下，模型数值语义应保持一致
 - 若只改变 expert 顺序，输出不应出现系统性错误
@@ -420,6 +432,11 @@ def pick_dp_rank_for_request(token_ids, T_full, Tp_full=None, T_score_full=None,
    - `dev_score[dev] = sum(Tp_full[token] if T_full[token] == dev else 0 for token in token_ids)`
 3. **最简硬投票**
    - `dev_score[dev] = count(T_full[token] == dev)`
+
+默认在线实现约定补充：
+- 若离线产物是 **per-layer** 的 `T_score_full[layer]`，Attention-DP 在线打分默认对**所有 MoE 层**做等权求和
+- 即先对 request 内 token 求和，再对所有 MoE 层求和，得到单个 request 的最终 `dev_score`
+- 首版不默认只取某个代表层；若要改成单层近似，必须明确标成 ablation 或 debug fallback
 
 然后：
 1. `dev_score[~dev_mask] = -inf`
@@ -536,6 +553,26 @@ semmoe_layer{L}.npz
 - `SEM_MOE_LOOKBACK=2`
 
 不要引入复杂 config 系统；环境变量或少量 args 即可。
+
+### 10.1 当前实现限制（必须写明，不能省略）
+如果当前上线的是首版 DP-only 路径，文档和实验说明里必须显式写出下面这些 limit：
+- 首版在线 model scheduling 只支持 `bf16/unquantized`
+- **不支持** 其他 quantization 路径，包括但不限于：
+  - `fp8`
+  - `gptq`
+  - `awq`
+  - `bitsandbytes`
+  - `compressed-tensors`
+  - 以及其他 fused-moe quant method
+- 不支持 `eplb` / redundant experts
+- 若命中上述不支持路径，系统必须：
+  1. 打印清晰 warning
+  2. 自动回退到原始 vLLM 行为
+  3. 不能 silent apply，更不能继续声称“已完成在线 model scheduling”
+
+结果声明补充：
+- 如果当前实现只支持 `bf16/unquantized`，实验报告和 PR 描述必须明确写出该限制
+- 不能把 `bf16-only` 的支持范围描述成“vLLM MoE 全路径已支持”
 
 ---
 
