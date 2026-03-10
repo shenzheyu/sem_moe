@@ -284,6 +284,8 @@ class ProfilePipelineTests(unittest.TestCase):
         )
         expected_cp = torch.tensor([0.75, 0.25, 0.5, 0.5], dtype=torch.float32)
         self.assertTrue(torch.allclose(artifact["cp_values"], expected_cp))
+        expected_a = torch.tensor([2.0 / 3.0, 1.0 / 3.0], dtype=torch.float32)
+        self.assertTrue(torch.allclose(artifact["a_values"], expected_a))
 
     def test_build_vocab_extension_from_embedding(self) -> None:
         embedding = torch.tensor(

@@ -6,9 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "datasets>=3.0.0",
-    "vllm",
+    "numpy>=2.0.0",
     "torch==2.10.0",
     "pytest>=9.0.2",
+    "vllm",
+    "tqdm>=4.67.3",
 ]
 
 [tool.uv.sources]

@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from profile_collect import run_collect_activations
+from profile_schedule import run_build_model_schedule
 from profile_stats import (
     run_build_token_expert_stats,
     run_extend_vocab,
@@ -154,7 +155,90 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional debug fallback that limits vocab extension to the first N tokens.",
     )
+    vocab_parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable terminal progress bars for long-running vocab extension work.",
+    )
     vocab_parser.set_defaults(func=run_extend_vocab)
+
+    schedule_parser = profile_subparsers.add_parser(
+        "build-model-schedule",
+        help="Run the offline co-scheduling solver and export paper-aligned schedule tables.",
+    )
+    schedule_parser.add_argument("--run-dir", type=_existing_run_dir, required=True)
+    schedule_parser.add_argument(
+        "--num-devices",
+        type=int,
+        default=2,
+        help="Number of expert clusters / devices used by the offline solver.",
+    )
+    schedule_parser.add_argument(
+        "--lookback",
+        type=int,
+        default=2,
+        help="Number of previous MoE layers used to build A_prob / A / Ap.",
+    )
+    schedule_parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Deterministic seed for the offline solver.",
+    )
+    schedule_parser.add_argument(
+        "--n-steps",
+        type=int,
+        default=8,
+        help="Number of alternating optimization steps.",
+    )
+    schedule_parser.add_argument(
+        "--ft-steps",
+        type=int,
+        default=64,
+        help="Number of random expert-swap fine-tuning attempts per layer step.",
+    )
+    schedule_parser.add_argument(
+        "--alpha-e",
+        type=float,
+        default=1.0,
+        help="Weight for expert-expert affinity in expert placement.",
+    )
+    schedule_parser.add_argument(
+        "--beta-e",
+        type=float,
+        default=1.0,
+        help="Weight for request-expert affinity in expert placement.",
+    )
+    schedule_parser.add_argument(
+        "--gamma-e",
+        type=float,
+        default=1.0,
+        help="Penalty weight for imbalanced expert hotness across clusters.",
+    )
+    schedule_parser.add_argument(
+        "--alpha-r",
+        type=float,
+        default=1.0,
+        help="Weight for request-request affinity in request scheduling.",
+    )
+    schedule_parser.add_argument(
+        "--beta-r",
+        type=float,
+        default=1.0,
+        help="Weight for request-expert affinity in request scheduling.",
+    )
+    schedule_parser.add_argument(
+        "--theta",
+        type=float,
+        default=0.5,
+        help="Tradeoff between token-load balance and remote activation cost.",
+    )
+    schedule_parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable terminal progress bars for long-running offline scheduling work.",
+    )
+    schedule_parser.set_defaults(func=run_build_model_schedule)
 
     inspect_parser = profile_subparsers.add_parser(
         "inspect",

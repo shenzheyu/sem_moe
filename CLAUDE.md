@@ -71,6 +71,9 @@
 3. 保证 locality 与 load balance 两个目标都被纳入优化，而不是只做启发式静态分桶
 
 > 只做 `T` 表 + request 调度，不做 `E` 的 expert 重排，只能算 paper-inspired baseline，不算论文主体复现。
+> 本仓库第二步默认以 `iclr2026_conference.tex` 实际引用的
+> `method_zhang.tex + motivation_zhang.tex` 为准，实现的是
+> alternating solver，不采用旧稿里 CEO/CEM 采样版作为主线。
 
 ### 第三步：Attention-DP 在线数据调度
 目标：
@@ -133,6 +136,15 @@
 - `Tp[layer][token_id] = confidence`
   含义：`T[layer][token_id]` 这个选择的置信度
 
+实现约定（为了和论文正文/appendix 的两种写法对齐）：
+- 离线内部先构建
+  `T_score[layer][token_id, device_id]`
+- 然后导出：
+  - `T[layer][token_id] = argmax(T_score[layer][token_id])`
+  - `Tp[layer][token_id] = max(T_score[layer][token_id])`
+- `T_score` 必须由最优 `p_matrix_req` 统计 `p_matrix_tk_opt`
+  后得到；不要直接从 `Cp` 或启发式 affinity 上取 `argmax`
+
 ### 2.3 TP 额外表（inter-layer activation conjugacy）
 论文这里建模的是 **device sequence -> next device distribution**。
 
@@ -143,6 +155,9 @@
 1. 先收集每层 token 的 activation trace
 2. 用当前层的 `E[layer][expert_id] -> device_id` 将 expert activation
    投影成 device activation
+   - 当前仓库实现时，先把 top-k routed experts 投影到 device
+   - 再对该 token 在该层取单个 `device_label`
+   - 默认规则：多数票；若平票，取较小的 `device_id`
 3. 对每个 layer、每个 `seq_id`（前 `lookback` 层 device sequence）统计
    当前层各 `next_device` 的出现次数
 4. 沿 next-device 维归一化，得到
@@ -191,6 +206,23 @@
 - `T_score_full[layer]`: `[vocab_size, num_devices]`
 
 这样 DP request 打分可以直接做加权求和，而不是只做硬投票。
+
+OOV / full-vocab 扩展默认规则：
+- 第二步默认使用第一步 embedding nearest-neighbor 结果，将
+  seen-token 的 `T_score` / `T` / `Tp` **直接 copy** 到 full vocabulary
+- 不默认做 similarity smoothing
+- 若要做 smoothing，只能明确标成 `debug fallback`
+
+默认 solver 超参数（论文未给出精确数值时，本仓库统一用这个默认）：
+- `alpha_e = 1.0`
+- `beta_e = 1.0`
+- `gamma_e = 1.0`
+- `alpha_r = 1.0`
+- `beta_r = 1.0`
+- `theta = 0.5`
+- `n_steps = 8`
+- `ft_steps = 64`
+- `lookback = 2`
 
 ---
 

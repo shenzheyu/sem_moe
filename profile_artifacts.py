@@ -44,6 +44,24 @@ def raw_shard_path(run_dir: str | Path, shard_index: int) -> Path:
     return Path(run_dir) / "raw" / f"raw_shard_{shard_index:05d}.pt"
 
 
+def schedule_dir(run_dir: str | Path) -> Path:
+    return Path(run_dir) / "schedule"
+
+
+def ensure_schedule_dir(run_dir: str | Path) -> Path:
+    output_dir = schedule_dir(run_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def schedule_manifest_path(run_dir: str | Path) -> Path:
+    return schedule_dir(run_dir) / "manifest.json"
+
+
+def schedule_layer_path(run_dir: str | Path, layer_id: int) -> Path:
+    return schedule_dir(run_dir) / f"semmoe_layer{layer_id}.npz"
+
+
 def _json_default(value: Any) -> Any:
     if is_dataclass(value):
         return asdict(value)

@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from safetensors import safe_open
 
+from progress_utils import progress_iter
 from profile_artifacts import (
     collection_manifest_path,
     load_json,
@@ -114,8 +115,16 @@ def build_sparse_layer_artifact(
             cp_values.append(float(count) / float(total) if total else 0.0)
         row_splits.append(len(count_expert_ids))
 
+    freq_total = int(freq.sum())
+    a_values = (
+        freq.to(torch.float32) / float(freq_total)
+        if freq_total > 0
+        else torch.zeros(num_seen_tokens, dtype=torch.float32)
+    )
+
     return {
         "freq": freq,
+        "a_values": a_values,
         "row_splits": torch.tensor(row_splits, dtype=torch.int32),
         "count_expert_ids": torch.tensor(count_expert_ids, dtype=torch.int32),
         "count_values": torch.tensor(count_values, dtype=torch.int32),
@@ -140,6 +149,7 @@ def run_extend_vocab(args: Any) -> None:
         query_batch_size=args.query_batch_size,
         device=args.device,
         vocab_limit=args.vocab_limit,
+        show_progress=not getattr(args, "no_progress", False),
     )
     extension["metadata"] = {
         "model_name": model_name,
@@ -158,6 +168,7 @@ def build_vocab_extension_from_embedding(
     query_batch_size: int,
     device: str,
     vocab_limit: int | None = None,
+    show_progress: bool = True,
 ) -> dict[str, torch.Tensor]:
     if query_batch_size <= 0:
         raise ValueError("query_batch_size must be positive")
@@ -185,7 +196,13 @@ def build_vocab_extension_from_embedding(
         valid_seen = unique_seen[unique_seen < effective_vocab]
         exact_seen_mask[valid_seen] = True
 
-    for start in range(0, effective_vocab, query_batch_size):
+    starts = range(0, effective_vocab, query_batch_size)
+    for start in progress_iter(
+        starts,
+        total=math.ceil(effective_vocab / query_batch_size),
+        desc="Extending vocab",
+        enabled=show_progress,
+    ):
         end = min(start + query_batch_size, effective_vocab)
         query_embedding = F.normalize(
             embedding[start:end].to(device=target_device, dtype=torch.float32),
