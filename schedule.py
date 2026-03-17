@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from progress_utils import progress_iter
-from profile_artifacts import (
+from artifacts import (
     collection_manifest_path,
     ensure_schedule_dir,
     load_json,
@@ -351,7 +351,8 @@ def solve_layer_schedule(
 
     current_expert_labels = best_expert_labels
     current_request_labels = best_request_labels
-    expert_affinity = torch.matmul((cp * a.unsqueeze(1)).T, (cp * a.unsqueeze(1)))
+    weighted_cp = cp * a.unsqueeze(1)
+    expert_affinity = torch.matmul(weighted_cp.T, weighted_cp)
 
     step_iterator = progress_iter(
         range(config.n_steps),
@@ -509,16 +510,19 @@ def expert_place(
         cluster_load[device_id] += float(expert_load[expert_id])
         cluster_affinity[device_id] += expert_affinity[:, expert_id]
 
+    # token_cluster_scores is invariant across ft_steps (request_labels doesn't change)
+    token_cluster_scores = build_token_cluster_scores(
+        num_seen_tokens=cp.shape[0],
+        num_devices=num_devices,
+        requests=requests,
+        request_labels=request_labels,
+    )
+
     best_labels = labels.clone()
     best_score = compute_schedule_objective(
         a=a,
         cp=cp,
-        token_cluster_scores=build_token_cluster_scores(
-            num_seen_tokens=cp.shape[0],
-            num_devices=num_devices,
-            requests=requests,
-            request_labels=request_labels,
-        ),
+        token_cluster_scores=token_cluster_scores,
         expert_labels=labels,
         num_devices=num_devices,
         theta=theta,
@@ -540,12 +544,7 @@ def expert_place(
         score = compute_schedule_objective(
             a=a,
             cp=cp,
-            token_cluster_scores=build_token_cluster_scores(
-                num_seen_tokens=cp.shape[0],
-                num_devices=num_devices,
-                requests=requests,
-                request_labels=request_labels,
-            ),
+            token_cluster_scores=token_cluster_scores,
             expert_labels=swapped,
             num_devices=num_devices,
             theta=theta,

@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 import torch
 
-from profile_artifacts import (
+from artifacts import (
     collection_manifest_path,
     raw_shard_path,
     save_torch_artifact,
@@ -18,7 +18,7 @@ from profile_artifacts import (
     vocab_artifact_path,
     write_json,
 )
-from profile_schedule import (
+from schedule import (
     ProfileRequest,
     ScheduleBuildConfig,
     build_activation_transition_tables,

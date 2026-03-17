@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from safetensors import safe_open
 
 from progress_utils import progress_iter
-from profile_artifacts import (
+from artifacts import (
     collection_manifest_path,
     load_json,
     load_torch_artifact,

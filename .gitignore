@@ -14,3 +14,9 @@ arXiv-2503.04398v5/
 
 # Results
 artifacts/
+
+# Data
+data/
+
+# Verify Result
+tp_verify_results/

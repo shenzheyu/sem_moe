@@ -13,7 +13,7 @@ from profile_collect import (
     _resolve_request_trace,
     infer_moe_layer_ids,
 )
-from profile_datasets import (
+from dataset_utils import (
     DatasetSpec,
     extract_prompt_text,
     format_mmlu_prompt,

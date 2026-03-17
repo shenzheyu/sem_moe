@@ -672,3 +672,7 @@ Attention-TP：
 2. 再做离线模型调度
 3. 再上线 Attention-DP 在线数据调度
 4. 最后做 Attention-TP 在线数据调度与通信路径改造
+
+## 14) 使用的python环境
+
+/workspace/semantic_parallelism/.venv

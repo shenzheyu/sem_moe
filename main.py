@@ -4,8 +4,8 @@ import argparse
 from pathlib import Path
 
 from profile_collect import run_collect_activations
-from profile_online_dp import run_evaluate_dp_scheduling
-from profile_schedule import run_build_model_schedule
+from eval_dp import run_evaluate_dp_scheduling
+from schedule import run_build_model_schedule
 from profile_stats import (
     run_build_token_expert_stats,
     run_extend_vocab,

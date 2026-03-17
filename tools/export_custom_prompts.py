@@ -5,7 +5,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from profile_datasets import (
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from dataset_utils import (
     extract_prompt_text,
     iter_dataset_rows,
     parse_dataset_spec,
@@ -34,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-dir",
-        default="/workspace/semantic_parallelism/data",
+        default=str(Path(__file__).resolve().parent.parent / "data"),
         help="Directory where exported .jsonl files will be written.",
     )
     parser.add_argument(
@@ -107,6 +111,21 @@ def export_dataset(
     }
 
 
+_cached_tokenizer = None
+
+
+def _get_tokenizer():
+    global _cached_tokenizer
+    if _cached_tokenizer is None:
+        from transformers import AutoTokenizer
+
+        _cached_tokenizer = AutoTokenizer.from_pretrained(
+            "Qwen/Qwen3.5-35B-A3B",
+            local_files_only=True,
+        )
+    return _cached_tokenizer
+
+
 def _extract_output_tokens(row: dict[str, Any]) -> int | None:
     for key in ("output_tokens",):
         value = row.get(key)
@@ -117,12 +136,7 @@ def _extract_output_tokens(row: dict[str, Any]) -> int | None:
         value = row.get(key)
         if isinstance(value, str) and value.strip():
             try:
-                from transformers import AutoTokenizer
-
-                tokenizer = AutoTokenizer.from_pretrained(
-                    "Qwen/Qwen3.5-35B-A3B",
-                    local_files_only=True,
-                )
+                tokenizer = _get_tokenizer()
                 return len(tokenizer(value, add_special_tokens=False).input_ids)
             except Exception:
                 return None

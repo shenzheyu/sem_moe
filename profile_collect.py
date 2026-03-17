@@ -9,7 +9,7 @@ from typing import Any
 
 import torch
 
-from profile_artifacts import (
+from artifacts import (
     FORMAT_VERSION,
     collection_manifest_path,
     ensure_run_dir,
@@ -18,7 +18,7 @@ from profile_artifacts import (
     utc_timestamp,
     write_json,
 )
-from profile_datasets import DatasetSpec, PromptRecord, iter_prompt_records, parse_dataset_spec
+from dataset_utils import DatasetSpec, PromptRecord, iter_prompt_records, parse_dataset_spec
 
 
 ROUTED_EXPERTS_TRACE_DIR_ENV = "VLLM_ROUTED_EXPERTS_TRACE_DIR"

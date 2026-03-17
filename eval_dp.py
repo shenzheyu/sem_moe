@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from profile_artifacts import (
+from artifacts import (
     collection_manifest_path,
     load_json,
     load_torch_artifact,
@@ -143,8 +143,9 @@ def evaluate_strategy(
     layer_labels: dict[int, np.ndarray],
     num_devices: int,
 ) -> dict[str, Any]:
+    assignments_list = assignments.tolist()
     token_load_per_device = np.zeros((num_devices,), dtype=np.int64)
-    for request, assigned_device in zip(requests, assignments.tolist(), strict=True):
+    for request, assigned_device in zip(requests, assignments_list, strict=True):
         token_load_per_device[assigned_device] += int(request.token_ids.shape[0])
 
     total_local = 0
@@ -154,7 +155,7 @@ def evaluate_strategy(
     for layer_id, expert_labels in layer_labels.items():
         layer_local = 0
         layer_remote = 0
-        for request, assigned_device in zip(requests, assignments.tolist(), strict=True):
+        for request, assigned_device in zip(requests, assignments_list, strict=True):
             routed = request.routed_experts[:, int(layer_id)]
             for expert_ids in routed:
                 labels = expert_labels[expert_ids]

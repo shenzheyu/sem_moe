@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 import torch
 
-from profile_artifacts import (
+from artifacts import (
     collection_manifest_path,
     raw_shard_path,
     schedule_layer_path,
@@ -16,7 +16,7 @@ from profile_artifacts import (
     save_torch_artifact,
     write_json,
 )
-from profile_online_dp import evaluate_dp_scheduling_from_run
+from eval_dp import evaluate_dp_scheduling_from_run
 
 
 class ProfileOnlineDPTests(unittest.TestCase):
