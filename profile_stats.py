@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
-from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 import torch
 import torch.nn.functional as F
@@ -36,39 +37,90 @@ def build_token_expert_stats_from_run(
     moe_layer_ids = [int(layer_id) for layer_id in model_metadata["moe_layer_ids"]]
     num_experts = int(model_metadata["num_experts"])
     top_k = int(model_metadata["top_k"])
+    num_layers = len(moe_layer_ids)
 
-    freq_by_layer: dict[int, Counter[int]] = {layer: Counter() for layer in moe_layer_ids}
-    count_by_layer: dict[int, dict[int, Counter[int]]] = {
-        layer: defaultdict(Counter) for layer in moe_layer_ids
-    }
-    seen_token_ids: set[int] = set()
+    # Determine vocab_cap from a quick scan of the first + last shard.
+    shard_paths = manifest["raw_shards"]
+    vocab_cap = _estimate_vocab_cap(run_dir, shard_paths)
 
-    for relative_path in manifest["raw_shards"]:
+    # Pick device: use GPU with most free memory for fast scatter_add_.
+    device = _pick_device(num_layers, vocab_cap=vocab_cap, num_experts=num_experts)
+
+    # Dense accumulators — per-layer to avoid >2B element flat tensors.
+    freq_acc = torch.zeros(vocab_cap, dtype=torch.int64, device=device)
+    # count_acc[layer_idx]: flat [vocab_cap * num_experts], dtype int32
+    count_acc = [
+        torch.zeros(vocab_cap * num_experts, dtype=torch.int32, device=device)
+        for _ in range(num_layers)
+    ]
+
+    # Pre-allocate reusable ones buffers on device.
+    max_tokens_per_shard = 65_536  # generous upper bound
+    ones_freq = torch.ones(max_tokens_per_shard, dtype=torch.int64, device=device)
+    ones_count = torch.ones(
+        max_tokens_per_shard * top_k, dtype=torch.int32, device=device
+    )
+
+    for relative_path in progress_iter(
+        shard_paths, total=len(shard_paths), desc="Aggregating shards"
+    ):
         shard = load_torch_artifact(run_dir / relative_path)
-        for record in shard["records"]:
-            prompt_token_ids = record["prompt_token_ids"].tolist()
-            routed_experts = record["routed_experts"]
-            for token_index, token_id in enumerate(prompt_token_ids):
-                seen_token_ids.add(int(token_id))
-                for layer_id in moe_layer_ids:
-                    experts = routed_experts[token_index, layer_id].tolist()
-                    freq_by_layer[layer_id][int(token_id)] += 1
-                    for expert_id in experts:
-                        count_by_layer[layer_id][int(token_id)][int(expert_id)] += 1
+        records = shard["records"]
+        if not records:
+            continue
 
-    sorted_seen_token_ids = sorted(seen_token_ids)
-    token_to_index = {
-        token_id: token_index for token_index, token_id in enumerate(sorted_seen_token_ids)
-    }
+        # Use numpy concat (much faster than torch.cat for many small tensors),
+        # then transfer to device in one shot.
+        all_token_ids = torch.from_numpy(
+            np.concatenate([r["prompt_token_ids"].numpy() for r in records])
+        ).to(dtype=torch.int64, device=device)
+        all_experts = torch.from_numpy(
+            np.concatenate([r["routed_experts"].numpy() for r in records])
+        ).to(dtype=torch.int64, device=device)
+        n = all_token_ids.shape[0]
+
+        # Grow buffers if needed (rare).
+        max_tid = int(all_token_ids.max().item())
+        if max_tid >= vocab_cap:
+            new_cap = max_tid + 10_000
+            freq_acc = _grow_tensor(freq_acc, vocab_cap, new_cap)
+            for i in range(num_layers):
+                count_acc[i] = _grow_count_1d(
+                    count_acc[i], vocab_cap, new_cap, num_experts
+                )
+            vocab_cap = new_cap
+        if n > max_tokens_per_shard:
+            max_tokens_per_shard = n
+            ones_freq = torch.ones(n, dtype=torch.int64, device=device)
+            ones_count = torch.ones(n * top_k, dtype=torch.int32, device=device)
+
+        # freq: single scatter_add.
+        freq_acc.scatter_add_(0, all_token_ids, ones_freq[:n])
+
+        # count: per-layer scatter_add (40 iters of fast GPU scatter).
+        tok_expanded = (
+            all_token_ids.unsqueeze(1).expand(n, top_k) * num_experts
+        )  # [N, top_k]
+        oc = ones_count[: n * top_k]
+        for layer_idx in range(num_layers):
+            flat_idx = (
+                tok_expanded + all_experts[:, layer_idx, :]
+            ).reshape(-1)
+            count_acc[layer_idx].scatter_add_(0, flat_idx, oc)
+
+    # --- Determine seen tokens and build output on CPU ---
+    freq_cpu = freq_acc[:vocab_cap].cpu()
+    seen_mask = freq_cpu > 0
+    sorted_seen_token_ids = seen_mask.nonzero(as_tuple=False).squeeze(1)
+    seen_freq = freq_cpu[sorted_seen_token_ids]
 
     layers: dict[str, dict[str, torch.Tensor]] = {}
-    for layer_id in moe_layer_ids:
-        layers[str(layer_id)] = build_sparse_layer_artifact(
-            count_by_token=count_by_layer[layer_id],
-            freq_by_token=freq_by_layer[layer_id],
-            token_to_index=token_to_index,
-            num_seen_tokens=len(sorted_seen_token_ids),
-        )
+    for layer_idx, layer_id in enumerate(moe_layer_ids):
+        layer_2d = count_acc[layer_idx].reshape(vocab_cap, num_experts).cpu()
+        seen_count = layer_2d[sorted_seen_token_ids]
+        layers[str(layer_id)] = _dense_to_sparse_layer(seen_count, seen_freq)
+        # Free GPU memory for this layer immediately.
+        count_acc[layer_idx] = None  # type: ignore[assignment]
 
     return {
         "metadata": {
@@ -80,56 +132,133 @@ def build_token_expert_stats_from_run(
             "moe_layer_ids": moe_layer_ids,
             "raw_trace_shards": manifest["raw_shards"],
         },
-        "seen_token_ids": torch.tensor(sorted_seen_token_ids, dtype=torch.int32),
+        "seen_token_ids": sorted_seen_token_ids.to(torch.int32),
         "layers": layers,
     }
 
 
-def build_sparse_layer_artifact(
-    count_by_token: dict[int, Counter[int]],
-    freq_by_token: Counter[int],
-    token_to_index: dict[int, int],
-    num_seen_tokens: int,
+def _estimate_vocab_cap(run_dir: Path, shard_paths: list[str]) -> int:
+    """Quick scan of first and last shard to set initial vocab_cap."""
+    max_tid = 0
+    for idx in (0, len(shard_paths) - 1):
+        shard = load_torch_artifact(run_dir / shard_paths[idx])
+        for r in shard["records"]:
+            t = r["prompt_token_ids"].max().item()
+            if t > max_tid:
+                max_tid = t
+    return int(max_tid) + 10_000
+
+
+def _pick_device(
+    num_layers: int, vocab_cap: int, num_experts: int
+) -> torch.device:
+    """Select GPU with enough free memory, or fall back to CPU."""
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+    # Estimate: num_layers tensors of [vocab_cap * num_experts] int32 + freq int64.
+    required = num_layers * vocab_cap * num_experts * 4 + vocab_cap * 8
+    required_with_headroom = int(required * 1.3)
+    best_gpu, best_free = -1, 0
+    for i in range(torch.cuda.device_count()):
+        try:
+            free, _ = torch.cuda.mem_get_info(i)
+        except (RuntimeError, torch.cuda.CudaError):
+            continue
+        if free > best_free:
+            best_free = free
+            best_gpu = i
+    if best_gpu >= 0 and best_free >= required_with_headroom:
+        print(f"Using cuda:{best_gpu} ({best_free / 2**30:.1f} GB free)")
+        return torch.device(f"cuda:{best_gpu}")
+    print("No GPU with enough free memory; falling back to CPU")
+    return torch.device("cpu")
+
+
+def _grow_tensor(tensor: torch.Tensor, old_size: int, new_size: int) -> torch.Tensor:
+    grown = torch.zeros(new_size, dtype=tensor.dtype, device=tensor.device)
+    grown[:old_size] = tensor[:old_size]
+    return grown
+
+
+def _grow_count_1d(
+    count_1d: torch.Tensor,
+    old_vocab: int,
+    new_vocab: int,
+    num_experts: int,
+) -> torch.Tensor:
+    old_2d = count_1d.reshape(old_vocab, num_experts)
+    new_1d = torch.zeros(
+        new_vocab * num_experts, dtype=count_1d.dtype, device=count_1d.device
+    )
+    new_1d.reshape(new_vocab, num_experts)[:old_vocab, :] = old_2d
+    return new_1d
+
+
+def _dense_to_sparse_layer(
+    count_2d: torch.Tensor,
+    freq: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-    row_splits = [0]
-    count_expert_ids: list[int] = []
-    count_values: list[int] = []
-    cp_values: list[float] = []
-    freq = torch.zeros(num_seen_tokens, dtype=torch.int32)
+    """Convert dense [num_seen, num_experts] counts + freq to sparse CSR format."""
+    num_seen = count_2d.shape[0]
 
-    rows_by_index: dict[int, list[tuple[int, int]]] = {}
-    for token_id, expert_counter in count_by_token.items():
-        token_index = token_to_index[token_id]
-        rows_by_index[token_index] = sorted(
-            (expert_id, count) for expert_id, count in expert_counter.items()
-        )
-    for token_id, token_freq in freq_by_token.items():
-        freq[token_to_index[token_id]] = int(token_freq)
+    # Build CSR from non-zero entries.
+    nz_mask = count_2d > 0  # [num_seen, num_experts]
+    row_nnz = nz_mask.sum(dim=1)  # [num_seen]
+    row_splits = torch.zeros(num_seen + 1, dtype=torch.int32)
+    torch.cumsum(row_nnz, dim=0, out=row_splits[1:])
 
-    for token_index in range(num_seen_tokens):
-        rows = rows_by_index.get(token_index, [])
-        total = sum(count for _, count in rows)
-        for expert_id, count in rows:
-            count_expert_ids.append(int(expert_id))
-            count_values.append(int(count))
-            cp_values.append(float(count) / float(total) if total else 0.0)
-        row_splits.append(len(count_expert_ids))
+    nz_indices = nz_mask.nonzero(as_tuple=False)  # [nnz, 2]
+    count_expert_ids = nz_indices[:, 1].to(torch.int32)
+    count_values = count_2d[nz_indices[:, 0], nz_indices[:, 1]].to(torch.int32)
 
-    freq_total = int(freq.sum())
+    # Cp: normalize counts along expert dim per token.
+    # row_totals[token] = sum of counts across all experts for that token.
+    row_totals = count_2d.sum(dim=1).float()  # [num_seen]
+    row_totals_per_entry = row_totals[nz_indices[:, 0]]
+    cp_values = count_values.float() / row_totals_per_entry.clamp(min=1.0)
+
+    freq_i32 = freq.to(torch.int32)
+    freq_total = freq.sum().item()
     a_values = (
-        freq.to(torch.float32) / float(freq_total)
+        freq.float() / float(freq_total)
         if freq_total > 0
-        else torch.zeros(num_seen_tokens, dtype=torch.float32)
+        else torch.zeros(num_seen, dtype=torch.float32)
     )
 
     return {
-        "freq": freq,
+        "freq": freq_i32,
         "a_values": a_values,
-        "row_splits": torch.tensor(row_splits, dtype=torch.int32),
-        "count_expert_ids": torch.tensor(count_expert_ids, dtype=torch.int32),
-        "count_values": torch.tensor(count_values, dtype=torch.int32),
-        "cp_values": torch.tensor(cp_values, dtype=torch.float32),
+        "row_splits": row_splits,
+        "count_expert_ids": count_expert_ids,
+        "count_values": count_values,
+        "cp_values": cp_values.to(torch.float32),
     }
+
+
+def build_sparse_layer_artifact(
+    count_by_token: dict[int, dict[int, int]],
+    freq_by_token: dict[int, int],
+    token_to_index: dict[int, int],
+    num_seen_tokens: int,
+) -> dict[str, torch.Tensor]:
+    """Kept for test compatibility — wraps _dense_to_sparse_layer."""
+    max_expert = 0
+    for expert_counter in count_by_token.values():
+        if expert_counter:
+            max_expert = max(max_expert, max(expert_counter.keys()))
+    num_experts = max_expert + 1
+
+    count_2d = torch.zeros(num_seen_tokens, num_experts, dtype=torch.int32)
+    for token_id, expert_counter in count_by_token.items():
+        idx = token_to_index[token_id]
+        for expert_id, cnt in expert_counter.items():
+            count_2d[idx, expert_id] = cnt
+
+    freq = torch.zeros(num_seen_tokens, dtype=torch.int64)
+    for token_id, f in freq_by_token.items():
+        freq[token_to_index[token_id]] = f
+
+    return _dense_to_sparse_layer(count_2d, freq)
 
 
 def run_extend_vocab(args: Any) -> None:

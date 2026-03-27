@@ -42,6 +42,8 @@ class ProfileRunConfig:
     enable_expert_parallel: bool
     trust_remote_code: bool
     enforce_eager: bool
+    max_model_len: int | None
+    max_num_seqs: int | None
 
 
 def run_collect_activations(args: Any) -> None:
@@ -68,6 +70,8 @@ def run_collect_activations(args: Any) -> None:
         enable_expert_parallel=args.enable_expert_parallel,
         trust_remote_code=args.trust_remote_code,
         enforce_eager=args.enforce_eager,
+        max_model_len=args.max_model_len,
+        max_num_seqs=args.max_num_seqs,
     )
     _validate_collect_config(config)
 
@@ -96,6 +100,8 @@ def run_collect_activations(args: Any) -> None:
             "enable_expert_parallel": config.enable_expert_parallel,
             "trust_remote_code": config.trust_remote_code,
             "enforce_eager": config.enforce_eager,
+            "max_model_len": config.max_model_len,
+            "max_num_seqs": config.max_num_seqs,
             "trace_transport": "vllm_worker_file_export",
         },
         "model_metadata": model_metadata,
@@ -120,6 +126,8 @@ def run_collect_activations(args: Any) -> None:
             tensor_parallel_size=config.tensor_parallel_size,
             enable_expert_parallel=config.enable_expert_parallel,
             enforce_eager=config.enforce_eager,
+            **({"max_model_len": config.max_model_len} if config.max_model_len is not None else {}),
+            **({"max_num_seqs": config.max_num_seqs} if config.max_num_seqs is not None else {}),
         )
         tokenizer = llm.get_tokenizer()
         sampling_params = SamplingParams(max_tokens=1, temperature=0.0)

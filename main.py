@@ -125,6 +125,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run vLLM in eager mode while collecting traces.",
     )
+    collect_parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=None,
+        help="Maximum model sequence length passed to vLLM.",
+    )
+    collect_parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=None,
+        help="Maximum number of sequences per iteration passed to vLLM.",
+    )
     collect_parser.set_defaults(func=run_collect_activations)
 
     stats_parser = profile_subparsers.add_parser(
@@ -246,6 +258,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Evaluate Attention-DP request scheduling metrics from raw traces and schedule tables.",
     )
     evaluate_dp_parser.add_argument("--run-dir", type=_existing_run_dir, required=True)
+    evaluate_dp_parser.add_argument(
+        "--layerwise-diagnostic",
+        action="store_true",
+        help=(
+            "Include an expensive per-layer request-assignment diagnostic that "
+            "isolates layerwise solver quality from the global DP assignment."
+        ),
+    )
     evaluate_dp_parser.set_defaults(func=run_evaluate_dp_scheduling)
 
     inspect_parser = profile_subparsers.add_parser(

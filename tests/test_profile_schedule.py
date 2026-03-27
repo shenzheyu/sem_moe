@@ -20,6 +20,7 @@ from artifacts import (
 )
 from schedule import (
     ProfileRequest,
+    RequestBatch,
     ScheduleBuildConfig,
     build_activation_transition_tables,
     build_request_profiles,
@@ -122,7 +123,8 @@ class ProfileScheduleTests(unittest.TestCase):
                 routed_experts=torch.zeros((1, 3, 2), dtype=torch.long),
             ),
         ]
-        req_profiles, req_lengths = build_request_profiles(cp, requests)
+        batch = RequestBatch.from_requests(requests)
+        req_profiles = build_request_profiles(cp, batch)
         config = ScheduleBuildConfig(
             run_dir=Path("/tmp/unused"),
             num_devices=2,
@@ -142,13 +144,13 @@ class ProfileScheduleTests(unittest.TestCase):
         init_expert = init_expert_seed_assignment(torch.matmul(a, cp), config.num_devices)
         init_request = request_schedule(
             req_profiles=req_profiles,
-            req_lengths=req_lengths,
+            req_lengths=batch.req_lengths,
             expert_labels=init_expert,
             num_devices=config.num_devices,
             alpha_r=config.alpha_r,
             beta_r=config.beta_r,
         )
-        init_score = build_token_cluster_scores(cp.shape[0], config.num_devices, requests, init_request)
+        init_score = build_token_cluster_scores(cp.shape[0], config.num_devices, batch, init_request)
         init_objective = compute_schedule_objective(
             a=a,
             cp=cp,
@@ -162,8 +164,7 @@ class ProfileScheduleTests(unittest.TestCase):
             cp=cp,
             a=a,
             req_profiles=req_profiles,
-            req_lengths=req_lengths,
-            requests=requests,
+            batch=batch,
             config=config,
             layer_seed=0,
             layer_id=0,
