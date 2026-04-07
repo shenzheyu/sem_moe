@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 import types
 import unittest
 from unittest import mock
@@ -12,6 +13,7 @@ from profile_collect import (
     _collect_worker_trace_records,
     _resolve_request_trace,
     infer_moe_layer_ids,
+    run_collect_activations,
 )
 from dataset_utils import (
     DatasetSpec,
@@ -232,6 +234,67 @@ class ProfilePipelineTests(unittest.TestCase):
                 torch.tensor([[[5, 6]]], dtype=torch.int32),
             )
         )
+
+    def test_collect_activations_disables_prefix_caching_and_chunked_prefill(self) -> None:
+        llm_kwargs: dict[str, object] = {}
+
+        class FakeLLM:
+            def __init__(self, **kwargs: object) -> None:
+                llm_kwargs.update(kwargs)
+
+            def get_tokenizer(self) -> object:
+                return object()
+
+        class FakeSamplingParams:
+            def __init__(self, **_: object) -> None:
+                pass
+
+        fake_vllm = types.ModuleType("vllm")
+        fake_vllm.LLM = FakeLLM
+        fake_vllm.SamplingParams = FakeSamplingParams
+
+        args = types.SimpleNamespace(
+            model="Qwen/Qwen3-30B-A3B",
+            dataset=["lmsys-chat-1m"],
+            dataset_split=None,
+            output_dir="unused",
+            run_name="test-run",
+            profile_fraction=0.2,
+            batch_size=16,
+            shard_size=128,
+            max_prompts=None,
+            max_prompt_tokens=None,
+            seed=0,
+            gpu_memory_utilization=0.9,
+            tensor_parallel_size=2,
+            enable_expert_parallel=False,
+            trust_remote_code=False,
+            enforce_eager=False,
+            max_model_len=None,
+            max_num_seqs=None,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            args.output_dir = temp_dir
+            with (
+                mock.patch.dict(sys.modules, {"vllm": fake_vllm}),
+                mock.patch(
+                    "profile_collect.load_model_profile_metadata",
+                    return_value={
+                        "model_name": args.model,
+                        "model_type": "qwen3_moe",
+                        "num_hidden_layers": 1,
+                        "num_experts": 1,
+                        "top_k": 1,
+                        "moe_layer_ids": [0],
+                    },
+                ),
+                mock.patch("profile_collect.iter_prompt_records", return_value=iter(())),
+            ):
+                run_collect_activations(args)
+
+        self.assertIs(llm_kwargs["enable_prefix_caching"], False)
+        self.assertIs(llm_kwargs["enable_chunked_prefill"], False)
 
     def test_resolve_request_trace_validates_lengths(self) -> None:
         request_output = types.SimpleNamespace(

@@ -126,6 +126,10 @@ def run_collect_activations(args: Any) -> None:
             tensor_parallel_size=config.tensor_parallel_size,
             enable_expert_parallel=config.enable_expert_parallel,
             enforce_eager=config.enforce_eager,
+            # Profiling assumes one routed-expert row per prompt token, so
+            # disable optimizations that can skip or split prompt execution.
+            enable_prefix_caching=False,
+            enable_chunked_prefill=False,
             **({"max_model_len": config.max_model_len} if config.max_model_len is not None else {}),
             **({"max_num_seqs": config.max_num_seqs} if config.max_num_seqs is not None else {}),
         )

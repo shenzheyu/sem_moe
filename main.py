@@ -5,6 +5,7 @@ from pathlib import Path
 
 from profile_collect import run_collect_activations
 from eval_dp import run_evaluate_dp_scheduling
+from eval_tp import run_evaluate_tp_scheduling
 from schedule import run_build_model_schedule
 from profile_stats import (
     run_build_token_expert_stats,
@@ -267,6 +268,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     evaluate_dp_parser.set_defaults(func=run_evaluate_dp_scheduling)
+
+    evaluate_tp_parser = profile_subparsers.add_parser(
+        "evaluate-tp-scheduling",
+        help="Evaluate Attention-TP token scheduling metrics from raw traces and schedule tables.",
+    )
+    evaluate_tp_parser.add_argument("--run-dir", type=_existing_run_dir, required=True)
+    evaluate_tp_parser.set_defaults(func=run_evaluate_tp_scheduling)
 
     inspect_parser = profile_subparsers.add_parser(
         "inspect",
