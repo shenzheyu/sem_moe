@@ -7,10 +7,17 @@ Reproduces Figure 1 from "Semantic Parallelism" paper:
   - Generates separate *.pt.trace.json.gz per token count
   - Parses trace files to extract MoE dispatch/compute/combine breakdown
 
-Usage (2-GPU, EP=2):
+Usage (2-GPU, EP=2, default allgather_reducescatter):
   CUDA_VISIBLE_DEVICES=2,3 .venv/bin/python moe_comm_sweep.py \
       --model Qwen/Qwen3.5-35B-A3B \
       --dp-size 2 \
+      --token-sizes 2048,4096,8192,16384
+
+Usage (2-GPU, EP=2, DeepEP high-throughput):
+  CUDA_VISIBLE_DEVICES=2,3 .venv/bin/python moe_comm_sweep.py \
+      --model Qwen/Qwen3.5-35B-A3B \
+      --dp-size 2 \
+      --all2all-backend deepep_high_throughput \
       --token-sizes 2048,4096,8192,16384
 
 Usage (4-GPU, EP=4):
@@ -44,13 +51,17 @@ import torch
 # Kernel classification patterns
 # ---------------------------------------------------------------------------
 
-# MoE dispatch: AllGather via AgRsAll2AllManager.dispatch()
-DISPATCH_PATTERNS = ["ncclDevKernel_AllGather"]
+# MoE dispatch patterns per backend
+DISPATCH_PATTERNS_AGRS = ["ncclDevKernel_AllGather"]
+DISPATCH_PATTERNS_DEEPEP = ["deep_ep_dispatch", "get_dispatch_layout",
+                            "ep_dispatch", "low_latency_dispatch"]
 
-# MoE combine: ReduceScatter via AgRsAll2AllManager.combine()
-COMBINE_PATTERNS = ["ncclDevKernel_ReduceScatter"]
+# MoE combine patterns per backend
+COMBINE_PATTERNS_AGRS = ["ncclDevKernel_ReduceScatter"]
+COMBINE_PATTERNS_DEEPEP = ["deep_ep_combine", "ep_combine",
+                           "low_latency_combine"]
 
-# MoE compute: routing + expert FFN + activation
+# MoE compute: routing + expert FFN + activation (backend-independent)
 COMPUTE_PATTERNS = [
     "fused_moe_kernel",
     "topkGating",
@@ -58,6 +69,18 @@ COMPUTE_PATTERNS = [
     "count_and_sort_expert_tokens_kernel",
     "act_and_mul_kernel",
 ]
+
+ALL2ALL_BACKENDS = [
+    "allgather_reducescatter",
+    "deepep_high_throughput",
+    "deepep_low_latency",
+]
+
+
+def _get_comm_patterns(backend: str) -> tuple[list[str], list[str]]:
+    if "deepep" in backend:
+        return DISPATCH_PATTERNS_DEEPEP, COMBINE_PATTERNS_DEEPEP
+    return DISPATCH_PATTERNS_AGRS, COMBINE_PATTERNS_AGRS
 
 
 # ---------------------------------------------------------------------------
@@ -78,14 +101,16 @@ def parse_trace_file(path: Path) -> dict[str, float]:
     return kernel_times
 
 
-def compute_moe_breakdown(kernel_times: dict[str, float]) -> dict:
+def compute_moe_breakdown(kernel_times: dict[str, float],
+                          backend: str = "allgather_reducescatter") -> dict:
     """Compute MoE dispatch/compute/combine breakdown from kernel times."""
+    dispatch_pats, combine_pats = _get_comm_patterns(backend)
     total_us = sum(kernel_times.values())
     dispatch_us = sum(
-        v for k, v in kernel_times.items() if any(p in k for p in DISPATCH_PATTERNS)
+        v for k, v in kernel_times.items() if any(p in k for p in dispatch_pats)
     )
     combine_us = sum(
-        v for k, v in kernel_times.items() if any(p in k for p in COMBINE_PATTERNS)
+        v for k, v in kernel_times.items() if any(p in k for p in combine_pats)
     )
     compute_us = sum(
         v for k, v in kernel_times.items() if any(p in k for p in COMPUTE_PATTERNS)
@@ -179,7 +204,7 @@ def _profile_one_token_size(
     )
     if rank0_trace:
         kernel_times = parse_trace_file(rank0_trace)
-        breakdown = compute_moe_breakdown(kernel_times)
+        breakdown = compute_moe_breakdown(kernel_times, args.all2all_backend)
     else:
         print("  WARNING: no trace file found for this run")
 
@@ -222,6 +247,7 @@ def _worker(rank: int, dp_size: int, master_ip: str, master_port: int,
         model=args.model,
         tensor_parallel_size=1,
         enable_expert_parallel=True,
+        all2all_backend=args.all2all_backend,
         enforce_eager=args.enforce_eager,
         max_model_len=args.max_model_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
@@ -289,7 +315,7 @@ def _worker(rank: int, dp_size: int, master_ip: str, master_port: int,
             )
             if rank0_trace:
                 kernel_times = parse_trace_file(rank0_trace)
-                breakdown = compute_moe_breakdown(kernel_times)
+                breakdown = compute_moe_breakdown(kernel_times, args.all2all_backend)
             else:
                 print("  WARNING: no trace file found for this run")
 
@@ -327,6 +353,7 @@ def _run_single(args: argparse.Namespace) -> list[dict]:
         model=args.model,
         data_parallel_size=1,
         tensor_parallel_size=1,
+        all2all_backend=args.all2all_backend,
         enforce_eager=args.enforce_eager,
         max_model_len=args.max_model_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
@@ -392,6 +419,9 @@ def main() -> None:
                         help="Disable CUDAGraph for cleaner profiling (default: off)")
     parser.add_argument("--no-enforce-eager", dest="enforce_eager",
                         action="store_false", help="Enable CUDAGraph")
+    parser.add_argument("--all2all-backend", default="allgather_reducescatter",
+                        choices=ALL2ALL_BACKENDS,
+                        help="All2All backend for EP communication")
     parser.add_argument("--profiler-wait", type=int, default=15,
                         help="Seconds to wait after stop_profile() for trace write")
     args = parser.parse_args()
@@ -424,7 +454,7 @@ def main() -> None:
     # Summary
     if results:
         print("\n" + "=" * 120)
-        print(f"  Model: {args.model}   DP=EP={dp_size}   prompt_len={args.prompt_len}")
+        print(f"  Model: {args.model}   DP=EP={dp_size}   prompt_len={args.prompt_len}   backend={args.all2all_backend}")
         print(
             f"{'Tokens':>8}  {'Latency(ms)':>12}  {'CUDA(ms)':>10}  "
             f"{'Dispatch(ms)':>13}  {'Compute(ms)':>12}  {'Combine(ms)':>12}  "
