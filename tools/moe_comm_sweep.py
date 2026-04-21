@@ -339,7 +339,7 @@ def _worker(rank: int, dp_size: int, master_ip: str, master_port: int,
 
 
 # ---------------------------------------------------------------------------
-# Single-process path (dp_size == 1, no EP comm)
+# Single-process path (dp_size == 1; supports tp_size >= 1 with EP when tp > 1)
 # ---------------------------------------------------------------------------
 
 def _run_single(args: argparse.Namespace) -> list[dict]:
@@ -348,11 +348,16 @@ def _run_single(args: argparse.Namespace) -> list[dict]:
 
     from vllm import LLM, SamplingParams
 
-    print(f"Loading model {args.model} (DP=1, single process, no EP comm) ...")
+    tp_size = args.tp_size
+    ep_enabled = tp_size > 1
+    mode = (f"DP=1, TP={tp_size}, EP={tp_size} (sequence parallel MoE)"
+            if ep_enabled else "DP=1, TP=1, single GPU (no EP comm)")
+    print(f"Loading model {args.model} ({mode}) ...")
     llm_kwargs: dict = dict(
         model=args.model,
         data_parallel_size=1,
-        tensor_parallel_size=1,
+        tensor_parallel_size=tp_size,
+        enable_expert_parallel=ep_enabled,
         all2all_backend=args.all2all_backend,
         enforce_eager=args.enforce_eager,
         max_model_len=args.max_model_len,
@@ -397,9 +402,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="MoE comm/compute sweep benchmark")
     parser.add_argument("--model", default="Qwen/Qwen3.5-35B-A3B")
     parser.add_argument("--dp-size", type=int, default=2,
-                        help="DP size = EP size (number of GPUs). "
-                             "1 = single process baseline (no EP comm). "
-                             ">1 = multi-process with EP communication.")
+                        help="DP size (number of multi-process DP replicas). "
+                             "1 = single process (combine with --tp-size for TP+EP). "
+                             ">1 = multi-process DP (each rank 1 GPU; TP must be 1).")
+    parser.add_argument("--tp-size", type=int, default=1,
+                        help="TP size. If >1, must pair with --dp-size 1. "
+                             "Together with --enable-expert-parallel (implicit when tp>1), "
+                             "gives TP=N EP=N sequence-parallel MoE.")
     parser.add_argument("--token-sizes", default="2048,4096,8192,16384",
                         help="Comma-separated total token counts to sweep")
     parser.add_argument("--prompt-len", type=int, default=512,
@@ -427,6 +436,13 @@ def main() -> None:
     args = parser.parse_args()
 
     dp_size = args.dp_size
+    tp_size = args.tp_size
+
+    if dp_size > 1 and tp_size > 1:
+        raise SystemExit(
+            "DP>1 and TP>1 together is not supported by this tool. "
+            "Use DP-only (--dp-size N --tp-size 1) or TP-only (--dp-size 1 --tp-size N)."
+        )
 
     if dp_size == 1:
         results = _run_single(args)
@@ -454,7 +470,9 @@ def main() -> None:
     # Summary
     if results:
         print("\n" + "=" * 120)
-        print(f"  Model: {args.model}   DP=EP={dp_size}   prompt_len={args.prompt_len}   backend={args.all2all_backend}")
+        topo = (f"DP={dp_size} TP={tp_size} EP={max(dp_size, tp_size)}"
+                if tp_size > 1 or dp_size > 1 else "DP=1 TP=1 (no EP)")
+        print(f"  Model: {args.model}   {topo}   prompt_len={args.prompt_len}   backend={args.all2all_backend}")
         print(
             f"{'Tokens':>8}  {'Latency(ms)':>12}  {'CUDA(ms)':>10}  "
             f"{'Dispatch(ms)':>13}  {'Compute(ms)':>12}  {'Combine(ms)':>12}  "

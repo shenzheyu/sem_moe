@@ -51,6 +51,7 @@ def run_backend(backend: str, output_dir: Path, args: argparse.Namespace) -> lis
         sys.executable, str(COMM_SWEEP),
         "--model", args.model,
         "--dp-size", str(args.dp_size),
+        "--tp-size", str(args.tp_size),
         "--all2all-backend", backend,
         "--token-sizes", args.token_sizes,
         "--prompt-len", str(args.prompt_len),
@@ -149,6 +150,9 @@ def main() -> None:
                         help="Comma-separated all2all backends to sweep")
     parser.add_argument("--model", default="Qwen/Qwen3.5-35B-A3B")
     parser.add_argument("--dp-size", type=int, default=2)
+    parser.add_argument("--tp-size", type=int, default=1,
+                        help="TP size. --dp-size 1 --tp-size N gives TP=N EP=N. "
+                             "Cannot combine DP>1 with TP>1.")
     parser.add_argument("--token-sizes", default="2048,4096,8192,16384")
     parser.add_argument("--prompt-len", type=int, default=512)
     parser.add_argument("--num-iters", type=int, default=5)
@@ -194,8 +198,10 @@ def main() -> None:
             "per_backend": all_results,
         }, f, indent=2)
 
+    topo = (f"DP={args.dp_size} TP={args.tp_size} EP={max(args.dp_size, args.tp_size)}"
+            if args.tp_size > 1 or args.dp_size > 1 else "DP=1 TP=1")
     print(f"\n{'#' * 80}")
-    print(f"# Comparison across backends (model={args.model}, DP=EP={args.dp_size})")
+    print(f"# Comparison across backends (model={args.model}, {topo})")
     print(f"{'#' * 80}")
     for metric, unit in [
         ("latency_ms", "ms"),
